@@ -1,0 +1,367 @@
+# Carlist - Universal Used Car Watchlist
+
+## Project Overview
+
+Carlist is a **universal watchlist for used-car listings** across all major sites (Cars.com, Autotrader, CarGurus, Craigslist, Carvana, dealer sites). Users paste/visit any listing URL → the browser extension extracts metadata → the backend tracks changes (price, status, relists) over time.
+
+### Core Value Proposition
+- One watchlist for cars from ANY site
+- Price drop alerts via email/push
+- VIN-based cross-site tracking (same car on multiple sites = one entry)
+- Crowd-powered updates: when one user views a listing, ALL watchers benefit
+
+---
+
+## ⚠️ CRITICAL LEGAL CONSTRAINTS
+
+**These constraints are NON-NEGOTIABLE and must be followed in ALL code:**
+
+1. **NO server-side scraping or crawling** - We NEVER fetch/parse HTML on the backend
+2. **NO automated browsing** - No headless browsers, Puppeteer, Playwright on server
+3. **NO robots.txt bypass** - We respect all site restrictions
+4. **NO ToS violations** - Everything must be user-triggered or metadata-only
+
+### What IS Allowed:
+- ✅ User's browser extension extracting data (user-initiated)
+- ✅ Gmail OAuth parsing user's own emails (with consent)
+- ✅ HEAD requests to check if URLs are alive (no HTML parsing)
+- ✅ Storing/processing data users send us
+
+---
+
+## Architecture
+
+```
+universal-carlist-extension/
+├── backend/              # Express.js + TypeScript API
+│   ├── prisma/          # PostgreSQL schema
+│   └── src/
+│       ├── routes/      # REST API endpoints
+│       ├── services/    # Business logic
+│       ├── queues/      # BullMQ background jobs
+│       └── cron/        # Scheduled tasks
+├── frontend/            # Next.js 14 dashboard
+│   └── src/app/         # App router pages
+├── extension/           # Chrome Manifest V3 extension
+│   └── src/
+│       ├── extractors/  # Site-specific data extractors
+│       ├── popup/       # React popup UI
+│       ├── content-script.ts
+│       └── background.ts
+└── packages/shared/     # Shared TypeScript types
+```
+
+---
+
+## Tech Stack
+
+| Layer | Technology | Version |
+|-------|------------|---------|
+| Backend | Express.js, TypeScript, Prisma | Node 18+ |
+| Database | PostgreSQL | 14+ |
+| Cache/Queue | Redis, BullMQ | 7+ |
+| Frontend | Next.js, React, TailwindCSS | 14.2+ |
+| Extension | Chrome Manifest V3, React, Vite | 7+ |
+| Auth | JWT, Google OAuth | - |
+
+---
+
+## Key Concepts
+
+### 1. Crowd Refresh System
+The most important feature. When ANY user views a listing:
+1. Extension extracts current data → sends to backend
+2. Backend compares to previous snapshot
+3. If price/status changed → notify ALL users watching that VIN
+4. One user's action benefits everyone
+
+**Implementation:** `backend/src/services/vehicleService.ts` → `processSnapshot()` and `handlePriceChange()`
+
+### 2. VIN-Based Tracking
+- VIN is the primary key when available (17 chars, uppercase, no I/O/Q)
+- Same VIN on Cars.com + Autotrader = merged into one vehicle record
+- Use `normalizeVin()` helper for consistent formatting
+
+### 3. Fuzzy Fingerprinting (No VIN)
+When VIN isn't available (Craigslist, FB), we create a fingerprint:
+```
+year|make|model|trim|mileage(rounded)|price(rounded)|location
+```
+Example: `2020|honda|accord|sport|45k|27500|losangeles`
+
+**Implementation:** `vehicleService.generateFingerprint()`
+
+### 4. Freshness Levels
+Data freshness matters since we don't scrape:
+- **fresh**: Checked within 24 hours
+- **recent**: Checked within 6 days  
+- **stale**: 7+ days (prompt user to refresh)
+
+### 5. Data Flow
+```
+User views listing → Extension extracts → POST /api/extension/snapshot
+                                              ↓
+                               vehicleService.processSnapshot()
+                                              ↓
+                         Detect changes → Notify watchers → Redis pub/sub
+```
+
+---
+
+## Database Schema (Prisma)
+
+Key models in `backend/prisma/schema.prisma`:
+
+- **User**: Auth, OAuth tokens, notification prefs
+- **Vehicle**: The canonical car record (VIN + fingerprint)
+- **VehicleSnapshot**: Point-in-time data captures
+- **WatchlistEntry**: User ↔ Vehicle relationship with alert settings
+- **PriceChange**: Detected price movements
+- **StatusChange**: Listing status transitions
+- **Notification**: Alerts sent to users
+
+### Important Enums:
+- `ListingSource`: CARS_COM, AUTOTRADER, CARGURUS, CRAIGSLIST, CARVANA, etc.
+- `ListingStatus`: ACTIVE, PENDING, SOLD, REMOVED, RELISTED
+- `TriggerSource`: EXTENSION_REFRESH, EMAIL_ALERT, HEAD_CHECK, CROWD_REFRESH
+
+---
+
+## API Routes
+
+### Authentication (`/api/auth`)
+- POST `/register` - Create account
+- POST `/login` - Sign in, returns JWT
+- GET `/me` - Current user
+- GET `/google/url` - OAuth URL
+- GET `/google/callback` - OAuth callback
+
+### Extension-Specific (`/api/extension`) 
+*Requires X-Extension-Key header + Bearer token*
+- POST `/snapshot` - Submit listing data (triggers crowd refresh)
+- POST `/watch` - Quick add to watchlist
+- DELETE `/watch/:vehicleId` - Remove
+- GET `/check-url` - Check if URL is tracked
+- GET `/watchlist-summary` - For popup
+
+### Watchlist (`/api/watchlist`)
+- GET `/` - User's watchlist with pagination
+- POST `/` - Add vehicle with settings
+- PATCH `/:vehicleId` - Update alert preferences
+- DELETE `/:vehicleId` - Remove
+- GET `/stats` - Aggregate stats
+
+### Vehicles (`/api/vehicles`)
+- GET `/:id` - Full vehicle with history
+- GET `/vin/:vin` - Find by VIN
+- GET `/:id/price-history` - Price timeline
+- POST `/compare` - Compare multiple vehicles
+
+---
+
+## Extension Architecture
+
+### Content Script (`content-script.ts`)
+- Runs on supported car listing pages
+- Injects floating "Track" button
+- Extracts data using site-specific extractors
+- Communicates with background script
+
+### Site Extractors (`extractors/*.ts`)
+Each site has its own extractor that returns `ExtractedListing`:
+- `cars-com.ts` - Cars.com
+- `autotrader.ts` - Autotrader
+- `cargurus.ts` - CarGurus
+- `craigslist.ts` - Craigslist
+- `carvana.ts` - Carvana
+- `facebook.ts` - FB Marketplace (legacy support)
+
+### Background Script (`background.ts`)
+- Handles messages from content script
+- Makes API calls to backend
+- Manages auth state
+
+### Popup (`popup/Popup.tsx`)
+- React component with TailwindCSS
+- Shows login or watchlist summary
+- Quick actions for tracked vehicles
+
+### Dev Mode
+Extension has dev mode with mock data (`config.dev.enabled`). When `import.meta.env.DEV` is true:
+- Returns mock watchlist/user data
+- No real API calls needed
+- Useful for UI development
+
+---
+
+## Frontend Architecture
+
+### App Router (Next.js 14)
+- `/` - Landing page
+- `/login` - Sign in
+- `/register` - Sign up
+- `/watchlist` - Main dashboard
+- `/vehicle/[id]` - Vehicle detail (TODO)
+- `/auth/callback` - OAuth callback
+
+### State Management
+- **Zustand** for auth state (`lib/store.ts`)
+- **React Query** for server state
+
+### Styling
+- TailwindCSS with custom theme
+- Primary color: `#0072c6` (blue)
+- Accent color: `#10b981` (green)
+- Dark theme: `midnight` (#0f172a)
+
+---
+
+## Coding Conventions
+
+### TypeScript
+- Strict mode enabled
+- Use interfaces for object shapes
+- Use `type` for unions/primitives
+- Avoid `any` - use `unknown` if needed
+
+### API Responses
+Always return consistent format:
+```typescript
+interface ApiResponse<T> {
+  success: boolean;
+  data?: T;
+  error?: { code: string; message: string };
+}
+```
+
+### Prices
+- Store in **cents** (integer) to avoid floating point issues
+- Display with `formatPrice(cents)` helper
+- API accepts dollars, converts internally
+
+### Error Handling
+- Use `AppError` class for known errors
+- Zod for request validation
+- Return appropriate HTTP status codes
+
+### Logging
+- Use `winston` logger, not `console.log`
+- Log at appropriate levels: error, warn, info, debug
+
+---
+
+## Background Jobs (BullMQ)
+
+### Queues
+- `notifications` - Send email/push notifications
+- `head-checks` - Lightweight alive checks
+- `email-processing` - Gmail parsing (TODO)
+
+### HEAD Checks
+- Run daily at 3 AM via cron
+- Only on vehicles not checked in 7+ days
+- Only check HTTP status (200/404/410)
+- NO HTML parsing
+
+---
+
+## Environment Variables
+
+### Backend Required:
+```
+DATABASE_URL=postgresql://...
+REDIS_URL=redis://localhost:6379
+JWT_SECRET=your-secret
+```
+
+### Backend Optional:
+```
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+SMTP_HOST=smtp.sendgrid.net
+SMTP_USER=apikey
+SMTP_PASS=...
+```
+
+### Frontend:
+```
+NEXT_PUBLIC_API_URL=http://localhost:3001/api
+```
+
+---
+
+## Common Tasks
+
+### Adding a New Site Extractor
+1. Create `extension/src/extractors/newsite.ts`
+2. Export `extractNewSiteListing(url: string): ExtractedListing`
+3. Add to `extractors/index.ts` switch statement
+4. Add URL pattern to `manifest.json` host_permissions
+5. Add to content_scripts matches
+
+### Adding a New API Endpoint
+1. Add route in `backend/src/routes/`
+2. Add service method if complex logic
+3. Add to frontend `lib/api.ts`
+4. Add React Query hook if needed
+
+### Debugging Extension
+1. Build: `npm run dev:extension`
+2. Load unpacked from `extension/dist`
+3. Check console in: extension popup, content script (page console), background (service worker)
+
+---
+
+## Testing Checklist
+
+When implementing features, verify:
+- [ ] No server-side HTML fetching/parsing
+- [ ] All data capture is user-triggered
+- [ ] VIN normalization applied
+- [ ] Prices stored in cents
+- [ ] Proper error handling
+- [ ] Notifications sent to ALL watchers on changes
+- [ ] Freshness levels calculated correctly
+
+---
+
+## Current Status / TODOs
+
+### Completed ✅
+- Monorepo structure
+- Database schema
+- Backend API (all routes)
+- Crowd refresh system
+- Browser extension with extractors
+- Frontend dashboard
+- Email notifications
+
+### In Progress 🔄
+- Gmail OAuth email parsing
+
+### Planned 📋
+- Push notifications
+- Vehicle comparison page
+- Full price history charts
+- Mobile share sheet
+- Rate limiting refinement
+- Production deployment
+
+---
+
+## Quick Reference
+
+### Start Development
+```bash
+npm install
+cd backend && npx prisma migrate dev
+npm run dev  # Runs backend + frontend
+npm run dev:extension  # Build extension with watch
+```
+
+### Key Files
+- Schema: `backend/prisma/schema.prisma`
+- Crowd refresh: `backend/src/services/vehicleService.ts`
+- Extractors: `extension/src/extractors/`
+- Dashboard: `frontend/src/app/watchlist/page.tsx`
+

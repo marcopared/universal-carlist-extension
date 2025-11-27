@@ -1,0 +1,348 @@
+// Prisma Schema for Universal Carlist
+// PostgreSQL database
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// USER & AUTH
+// ============================================
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String?  // Null if using OAuth only
+  name      String?
+  avatarUrl String?
+  
+  // OAuth
+  googleId       String?  @unique
+  googleAccessToken  String?
+  googleRefreshToken String?
+  gmailConnected Boolean @default(false)
+  
+  // Settings
+  emailNotifications Boolean @default(true)
+  pushNotifications  Boolean @default(true)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Relations
+  watchlist     WatchlistEntry[]
+  snapshots     VehicleSnapshot[]  @relation("CapturedBy")
+  notifications Notification[]
+  
+  @@index([email])
+  @@index([googleId])
+}
+
+// ============================================
+// VEHICLE & TRACKING
+// ============================================
+
+model Vehicle {
+  id String @id @default(uuid())
+  
+  // Identity - VIN is primary when available
+  vin         String?  @unique
+  fingerprint String?  // Fuzzy ID for VIN-less listings
+  
+  // Core specs
+  year          Int?
+  make          String?
+  model         String?
+  trim          String?
+  exteriorColor String?
+  interiorColor String?
+  bodyStyle     String?
+  transmission  String?
+  drivetrain    String?
+  fuelType      String?
+  engine        String?
+  
+  // Current state (denormalized from latest snapshot)
+  currentPrice   Int?     // Store in cents for precision
+  currentMileage Int?
+  currentStatus  ListingStatus @default(ACTIVE)
+  
+  // Price tracking
+  lowestPrice    Int?
+  highestPrice   Int?
+  priceDropCount Int @default(0)
+  
+  // Seller info
+  sellerName     String?
+  sellerType     SellerType @default(UNKNOWN)
+  sellerLocation String?
+  sellerPhone    String?
+  
+  // Photos
+  primaryPhotoUrl String?
+  photoUrls       String[]
+  photoHashes     String[] // For relist detection
+  
+  // Source tracking
+  sources    ListingSource[]
+  sourceUrls String[]
+  
+  // Freshness
+  lastCheckedAt  DateTime @default(now())
+  
+  // Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Relations
+  snapshots     VehicleSnapshot[]
+  watchedBy     WatchlistEntry[]
+  priceChanges  PriceChange[]
+  statusChanges StatusChange[]
+  notifications Notification[]
+  
+  @@index([vin])
+  @@index([fingerprint])
+  @@index([make, model, year])
+  @@index([currentPrice])
+  @@index([lastCheckedAt])
+}
+
+model VehicleSnapshot {
+  id        String   @id @default(uuid())
+  vehicleId String
+  vehicle   Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  
+  capturedAt   DateTime @default(now())
+  capturedById String
+  capturedBy   User     @relation("CapturedBy", fields: [capturedById], references: [id])
+  
+  // Core data at this point in time
+  price   Int?
+  mileage Int?
+  status  ListingStatus @default(ACTIVE)
+  
+  // Source
+  sourceUrl String
+  source    ListingSource
+  
+  // Raw data for debugging
+  rawData Json?
+  
+  @@index([vehicleId])
+  @@index([capturedAt])
+  @@index([capturedById])
+}
+
+// ============================================
+// WATCHLIST
+// ============================================
+
+model WatchlistEntry {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vehicleId String
+  vehicle   Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  
+  addedAt       DateTime @default(now())
+  priceWhenAdded Int?
+  notes         String?
+  tags          String[]
+  
+  // Notification preferences (per-vehicle overrides)
+  notifyPriceDrop    Boolean @default(true)
+  notifyPriceRise    Boolean @default(false)
+  notifyStatusChange Boolean @default(true)
+  notifyRelist       Boolean @default(true)
+  
+  // Thresholds
+  priceDropThreshold Int? // Notify if drops by this amount (cents)
+  targetPrice        Int? // Notify when hits this price (cents)
+  
+  // Tracking
+  lastNotifiedAt DateTime?
+  lastViewedAt   DateTime?
+  
+  @@unique([userId, vehicleId])
+  @@index([userId])
+  @@index([vehicleId])
+}
+
+// ============================================
+// EVENTS & NOTIFICATIONS
+// ============================================
+
+model PriceChange {
+  id        String   @id @default(uuid())
+  vehicleId String
+  vehicle   Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  
+  detectedAt    DateTime @default(now())
+  previousPrice Int
+  newPrice      Int
+  changeAmount  Int      // Can be negative (drop) or positive (rise)
+  changePercent Float
+  
+  triggeredBy       TriggerSource
+  triggeredByUserId String?
+  
+  @@index([vehicleId])
+  @@index([detectedAt])
+}
+
+model StatusChange {
+  id        String   @id @default(uuid())
+  vehicleId String
+  vehicle   Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  
+  detectedAt     DateTime @default(now())
+  previousStatus ListingStatus
+  newStatus      ListingStatus
+  
+  triggeredBy       TriggerSource
+  triggeredByUserId String?
+  
+  @@index([vehicleId])
+  @@index([detectedAt])
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vehicleId String
+  vehicle   Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  
+  type  NotificationType
+  title String
+  body  String
+  
+  // Related IDs
+  priceChangeId  String?
+  statusChangeId String?
+  
+  // Delivery tracking
+  channel   NotificationChannel
+  sentAt    DateTime?
+  readAt    DateTime?
+  
+  createdAt DateTime @default(now())
+  
+  @@index([userId])
+  @@index([vehicleId])
+  @@index([createdAt])
+  @@index([readAt])
+}
+
+// ============================================
+// EMAIL PARSING (Gmail Integration)
+// ============================================
+
+model ParsedEmail {
+  id        String   @id @default(uuid())
+  userId    String
+  
+  gmailMessageId String @unique
+  receivedAt     DateTime
+  fromAddress    String
+  subject        String
+  
+  // Extracted data
+  vehicleId    String?
+  priceChange  Int?
+  statusChange ListingStatus?
+  listingUrl   String?
+  
+  // Processing
+  parsed    Boolean @default(false)
+  parsedAt  DateTime?
+  
+  createdAt DateTime @default(now())
+  
+  @@index([userId])
+  @@index([gmailMessageId])
+  @@index([receivedAt])
+}
+
+// ============================================
+// HEAD CHECK QUEUE (Lightweight alive checks)
+// ============================================
+
+model HeadCheckJob {
+  id        String   @id @default(uuid())
+  vehicleId String
+  url       String
+  
+  scheduledAt DateTime
+  executedAt  DateTime?
+  
+  // Result
+  httpStatus   Int?
+  isAlive      Boolean?
+  redirectUrl  String?
+  
+  createdAt DateTime @default(now())
+  
+  @@index([scheduledAt])
+  @@index([vehicleId])
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
+enum ListingSource {
+  CARS_COM
+  AUTOTRADER
+  CARGURUS
+  CRAIGSLIST
+  FACEBOOK
+  CARFAX
+  CARVANA
+  VROOM
+  DEALER_SITE
+  UNKNOWN
+}
+
+enum ListingStatus {
+  ACTIVE
+  PENDING
+  SOLD
+  REMOVED
+  RELISTED
+  UNKNOWN
+}
+
+enum SellerType {
+  DEALER
+  PRIVATE
+  UNKNOWN
+}
+
+enum TriggerSource {
+  EXTENSION_REFRESH
+  EMAIL_ALERT
+  HEAD_CHECK
+  CROWD_REFRESH
+}
+
+enum NotificationType {
+  PRICE_DROP
+  PRICE_RISE
+  STATUS_CHANGE
+  RELIST_DETECTED
+  TARGET_PRICE_HIT
+}
+
+enum NotificationChannel {
+  EMAIL
+  PUSH
+  IN_APP
+}
+
