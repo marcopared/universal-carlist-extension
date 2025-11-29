@@ -1,0 +1,33 @@
+{
+  "name": "universal-carlist",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Universal Used Car Watchlist - Track prices and changes across all major car listing sites",
+  "workspaces": [
+    "packages/*",
+    "backend",
+    "frontend",
+    "extension"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "npm run dev -w backend",
+    "dev:frontend": "npm run dev -w frontend",
+    "dev:extension": "npm run dev -w extension",
+    "build": "npm run build -w packages/shared && npm run build -w backend && npm run build -w frontend && npm run build -w extension",
+    "build:backend": "npm run build -w backend",
+    "build:frontend": "npm run build -w frontend",
+    "build:extension": "npm run build -w extension",
+    "lint": "npm run lint -w backend -w frontend -w extension",
+    "db:migrate": "npm run db:migrate -w backend",
+    "db:seed": "npm run db:seed -w backend"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
+

@@ -1,0 +1,12 @@
+/* Content script styles - injected into car listing pages */
+
+#carlist-extension-root {
+  /* Reset any inherited styles */
+  all: initial;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+#carlist-extension-root * {
+  box-sizing: border-box;
+}
+

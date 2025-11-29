@@ -1,0 +1,64 @@
+{
+  "manifest_version": 3,
+  "name": "Carlist - Universal Car Watchlist",
+  "description": "Track used car listings across Cars.com, Autotrader, CarGurus, Craigslist, Facebook Marketplace, and dealer sites. Get price drop alerts!",
+  "version": "1.0.0",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "permissions": [
+    "storage",
+    "activeTab",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.cars.com/*",
+    "https://www.autotrader.com/*",
+    "https://www.cargurus.com/*",
+    "https://*.craigslist.org/*",
+    "https://www.facebook.com/marketplace/*",
+    "https://www.carfax.com/*",
+    "https://www.carvana.com/*",
+    "https://www.vroom.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.cars.com/*",
+        "https://www.autotrader.com/*",
+        "https://www.cargurus.com/*",
+        "https://*.craigslist.org/*",
+        "https://www.facebook.com/marketplace/*",
+        "https://www.carfax.com/*",
+        "https://www.carvana.com/*",
+        "https://www.vroom.com/*"
+      ],
+      "js": ["content-script.js"],
+      "css": ["content-style.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
+
